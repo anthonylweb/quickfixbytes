@@ -4,13 +4,22 @@
  * Plugin Name: Quick Fix Bytes
  * Description: AI -powered recipe creator..... and more!
  * Author: Anthony Laurence
- * Version: 2.0
+ * Version: 2.1
  * 
  * 
  * Changlog:
  * 
  * - updated OpenAI call with now required params 06182025
  * - updated for API changes and to use -gpt-image-1 for image gen 072526
+ * - Replace deprecated models with GPT-6 Luna and GPT Image 2.5 Sunburst.
+ * - Centralize API model configuration in wp-config.php.
+ * - Disable reasoning and increase completion token limit to 2,000.
+ * - Add validation for empty and truncated recipe responses.
+ * - Improve exception handling for recipe and image generation.
+ * - Allow successful recipe creation when image generation fails.
+ * - Explicitly configure image quality and output format.
+ * - Remove redundant model listing requests and verbose image response logging.
+ * - Improve diagnostic logging for API failures.
  * 
  */
 
