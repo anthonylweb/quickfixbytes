@@ -4,12 +4,22 @@
  * Plugin Name: Quick Fix Bytes
  * Description: AI -powered recipe creator..... and more!
  * Author: Anthony Laurence
- * Version: 2.0
+ * Version: 2.1
  * 
  * 
  * Changlog:
  * 
  * - updated OpenAI call with now required params 06182025
+ * - updated for API changes and to use -gpt-image-1 for image gen 072526
+ * - Replace deprecated models with GPT-6 Luna and GPT Image 2.5 Sunburst.
+ * - Centralize API model configuration in wp-config.php.
+ * - Disable reasoning and increase completion token limit to 2,000.
+ * - Add validation for empty and truncated recipe responses.
+ * - Improve exception handling for recipe and image generation.
+ * - Allow successful recipe creation when image generation fails.
+ * - Explicitly configure image quality and output format.
+ * - Remove redundant model listing requests and verbose image response logging.
+ * - Improve diagnostic logging for API failures.
  * 
  */
 
@@ -257,39 +267,62 @@ class Chefbot
         }
       }
 
-
-
-      //connect to OpenAI
+      // Connect to OpenAI
       $apiKey = defined('OPENAI_API_KEY') ? OPENAI_API_KEY : '';
-      //error handling is not set
-      if (empty($apiKey)) {
+
+      if (empty($apiKey) || !defined('OPENAI_TEXT_MODEL')) {
         wp_send_json_error([
           'message' => 'AI service is not configured.'
         ]);
       }
-      $client = OpenAI::client($apiKey);
+
       try {
+        $client = OpenAI::client($apiKey);
 
         $results = $client->chat()->create([
-          'model'       => 'gpt-3.5-turbo',
-          'messages'    => [
-            ['role' => 'system', 'content' => 'You are a helpful AI chef.'],
-            ['role' => 'user', 'content' => $prompt],
+          'model' => OPENAI_TEXT_MODEL,
+          'messages' => [
+            [
+              'role' => 'system',
+              'content' => 'You are a helpful AI chef who is an expert in all styles of cuisine.'
+            ],
+            [
+              'role' => 'user',
+              'content' => $prompt
+            ],
           ],
-          'max_tokens'  => 500,
-          'temperature' => 0.7
+          'reasoning_effort' => 'none',
+          'max_completion_tokens' => 2000
         ]);
+
+        if (defined('WP_DEBUG_LOG') && WP_DEBUG_LOG === true) {
+          error_log('OpenAI model: ' . OPENAI_TEXT_MODEL);
+          error_log(print_r($results->toArray(), true));
+        }
+
+        if (empty($results->choices[0]->message->content)) {
+          throw new \RuntimeException(
+            'OpenAI returned an empty recipe. Finish reason: ' .
+              ($results->choices[0]->finishReason ?? 'unknown')
+          );
+        }
+
+        if (($results->choices[0]->finishReason ?? '') === 'length') {
+          throw new \RuntimeException(
+            'OpenAI recipe exceeded the token limit.'
+          );
+        }
       } catch (\Throwable $e) {
 
-        error_log('OpenAI error: ' . $e->getMessage());
+        if (defined('WP_DEBUG_LOG') && WP_DEBUG_LOG === true) {
+          error_log('OpenAI recipe generation error: ' . $e->getMessage());
+        }
 
         wp_send_json_error([
           'message' => 'Our AI chefs are currently unavailable. Please try again later.'
         ]);
       }
 
-      //uncomment to test raw resp from AI
-      //error_log("RAW AI OUTPUT:\n" . $openai_response_text);
 
       if (!empty($results->choices[0]->message->content) && isset($results->choices[0]->message->content)) {
         //process the recipe 
@@ -350,23 +383,45 @@ class Chefbot
         }
 
         //generate the image
+        try {
+          $response = $client->images()->create([
+            'model' => OPENAI_IMAGE_MODEL,
+            'prompt' => $title . ', professional food photography, 15mm, studio lighting, hi-res',
+            'n' => 1,
+            'size' => '1024x1024',
+            'quality' => 'medium',
+            'output_format' => 'png'
+          ]);
 
-        $response = $client->images()->create([
+          if (empty($response->data[0]->b64_json)) {
+            throw new \RuntimeException(
+              'OpenAI returned an empty image.'
+            );
+          }
+        } catch (\Throwable $e) {
 
-          'prompt' => $title . ', professional food photography, 15mm, studio lighting"',
-          'n' => 1,
-          'size' => '1024x1024',
-          'response_format' => 'url',
-        ]);
-        $imageUrl = $response->data[0]['url'];
+          if (defined('WP_DEBUG_LOG') && WP_DEBUG_LOG === true) {
+            error_log('OpenAI image generation error: ' . $e->getMessage());
+          }
+
+          wp_send_json_success([
+            'link' => get_permalink($recipe_ID)
+          ]);
+        }
+
+
+
 
         //SAVE THE RECIPE/IMAGE AS A POST
+        $image = base64_decode($response->data[0]->b64_json);
+
+
         $wp_upload_dir = wp_upload_dir();
         $image_name = str_replace(" ", "-", $title) . ".png";
         $img_file = $wp_upload_dir['path'] . '/' . $image_name;
 
         // Function to write image into file 
-        file_put_contents($img_file, file_get_contents($imageUrl));
+        file_put_contents($img_file,  $image);
 
         //associate the image and the recipe in WP
         // Check the type of file. We'll use this as the 'post_mime_type'.
@@ -402,8 +457,10 @@ class Chefbot
 
         $r['link'] = get_permalink($recipe_ID);
 
+        if (defined('WP_DEBUG_LOG') && WP_DEBUG_LOG === true) {
+          wp_send_json_success($r);
+        }
 
-        wp_send_json_success($r);
         wp_send_json_success([
           'link' => get_permalink($recipe_ID),
         ]);
